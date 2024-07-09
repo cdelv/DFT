@@ -5,75 +5,75 @@ import glob
 import os
 import shutil
 import argparse
+import json
 import numpy as np
 import pandas as pd
 from scipy import optimize
 
-# maximun number of pseudos created in the optimization (soft limit)
-Maxiter = 1500
-
-# Bounds for the cutoff radii
-r_core_flag = 1.0
-Bounds = [
-    [0, 2.5], # S
-    [0, 3.5], # P
-    [0, 4],   # D
-    [0, 4.5],   # F
-    [0, 3]    # rcore
-]
-Bounds = np.array(Bounds).astype(np.float64)
-
-# Hardness Penalization Parameters using atom FOURIER_QMAX
-a = 0.5
-b = 10.0
-q0 = 17.0
-Bad_Return = 10*b
-def hardness_penalization(qmax):
-    return b/(1.0+np.exp((q0-qmax)/a))
-
-Script_Dir = os.path.abspath(os.getcwd())
-pg="/opt/Atom/atom-4.2.7-100/Tutorial/Utils/pg.sh"
-pt="/opt/Atom/atom-4.2.7-100/Tutorial/Utils/pt.sh"
-Pfile=''
-Tfile=''
-Data_Dir = ''
-Out_Dir = ''
-Data_Pfile = ''
-Data_Tfile = ''
-Count = 0
-
-Pseudo_Config = {
-    'run_type': 'pg',
-    'title': 'Sample H pseudo',
-    'PS_flavor': 'tm2',
-    'logder_r': 2.0,
-    'chemical_symbol': 'H',
-    'XC_flavor': 'ca',
-    'XC_id' : '00000000',
-    'spin_relativistic': '',
-    'fractional_atomic_number': 0.0,
-    'norbs_core': 0,
-    'norbs_valence': 1,
-    'rs': 0.1,
-    'rp': 0.1,
-    'rd': 0.1,
-    'rf': 0.1,
-    'rcore_flag': r_core_flag,
-    'rcore': 0.0,
-    'orbital_block': [[1, 0, 0.5, 0]]
+Configuration = {
+    'input_psuedo' : '',
+    'input_test' : '',
+    'pg' : '/opt/Atom/atom-4.2.7-100/Tutorial/Utils/pg.sh',
+    'pt' : '/opt/Atom/atom-4.2.7-100/Tutorial/Utils/pt.sh',
+    'script_dir' : os.path.abspath(os.getcwd()),
+    'out_dir' : 'Out',
+    'data_dir' : 'Data',
+    'data_pfile' : '',
+    'data_tfile' : '',
+    'opvars' : [],
+    'maxiter' : 1500,
+    'bounds' : [
+        [0.0, 2.5], # s
+        [0.0, 3.0], # p
+        [0.0, 3.5], # d
+        [0.0, 4.0], # f
+        [0.0, 3.0]  # rcore
+    ],
+    'a' : 0.45,
+    'b' : 1.0,
+    'q0' : 25.2,
+    'pseudo_config' : {
+        'run_type': 'pg',
+        'title': 'Sample H pseudo',
+        'PS_flavor': 'tm2',
+        'logder_r': 2.0,
+        'chemical_symbol': 'H',
+        'XC_flavor': 'ca',
+        'XC_id' : '00000000',
+        'spin_relativistic': '',
+        'fractional_atomic_number': 0.0,
+        'norbs_core': 0,
+        'norbs_valence': 1,
+        'rs': 0.1,
+        'rp': 0.1,
+        'rd': 0.1,
+        'rf': 0.1,
+        'r_core_flag': 1.0,
+        'rcore': 0.0,
+        'orbital_block': [[1, 0, 0.5, 0]]
+    },
+    'tests' : []
 }
 Orbital_Keys = {0 : 'rs', 1 : 'rp', 2 : 'rd', 3 : 'rf', 4 : 'rcore'}
 Orbital_Keys_Rev =  {'rs' : 0, 'rp' : 1, 'rd' : 2, 'rf' : 3, 'rcore' : 4}
-Key_Order = ['rs', 'rp', 'rd', 'rf', 'rcore']
-Keys = []
-Tests = []
+Bad_Return = 10 + 10 * Configuration['b']
+Count = 0
+
+def hardness_penalization(qmax):
+    return (Configuration['b'] /(1.0 + np.exp((Configuration['q0'] - qmax)/Configuration['a'])))
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='',
-        description='This program uses the annealing optimization algorithm to find the best combination of cutoff radii to create the pseudopotential. It uses the transferability test to evaluate how "good" a pseudopotential is. To use it, you need to provide the path of the Atom pg.sh and pt.sh scripts and have a pseudo input file and a transferability test file. Read the rest of the flags for details.',
-        epilog='''
-        Although the program sanitizes your input files, you still requires the input to be in the format expected by the Atom program. 
+        prog = '',
+        description = '''
+        This program uses the annealing optimization algorithm to find the best combination of cutoff radii to create the pseudopotential.
+        It uses the transferability test to evaluate how "good" a pseudopotential is.
+        To use it, you need to provide the path of the Atom pg.sh and pt.sh scripts and have a pseudo input file and a transferability test file.
+        Read the rest of the flags for details. The program also creates a config.json file to load an old state (overrides all passed varaibles). This is used for -res and -op with --resume.
+        ''',
+        epilog =
+        '''
+        Although the program sanitizes your input files, you still requires the input to be in the format expected by the Atom program.
         Report bugs to cdelv@unal.edu.co.
         '''
     )
@@ -86,11 +86,11 @@ def main():
     conf_group = parser.add_argument_group('Program configuration variables')
     conf_group.add_argument('-ip', '--input_psuedo', type=str, help='Input pseudo file to use. If not set, it looks for a *.inp file in the execution directory.')
     conf_group.add_argument('-it', '--input_test', type=str, help='Input test file to use. If not set, it looks for a *test* file in the execution directory.')
-    conf_group.add_argument('-pg', type=str, default=pg, help='Path to pg.sh Atom script. Defaults to '+pg)
-    conf_group.add_argument('-pt', type=str, default=pt, help='Path to pt.sh Atom script. Defaults to '+pt)
-    conf_group.add_argument('-o', '--out_dir', type=str, default='Out', help='Name of the output directory. Here the optimization log and results will be stored. Defaults to Out')
-    conf_group.add_argument('-d', '--data_dir', type=str, default='Data', help='Name of the data directory. Here the pseudos are generated and hold temporary files. It gets ovewritten each time a new pseudo is created. Defaults to Data')
-    conf_group.add_argument('-rcf', '--r_core_flag', type=float, default=r_core_flag, help='Value of the r_core_flag to use. The program does not optimize this value. Defaults to '+str(r_core_flag))
+    conf_group.add_argument('-pg', type=str, default=Configuration['pg'], help='Path to pg.sh Atom script. Defaults to '+Configuration['pg'])
+    conf_group.add_argument('-pt', type=str, default=Configuration['pt'], help='Path to pt.sh Atom script. Defaults to '+Configuration['pt'])
+    conf_group.add_argument('-o', '--out_dir', type=str, default=Configuration['out_dir'], help='Name of the output directory. Here the optimization log and results will be stored. Defaults to '+Configuration['out_dir'])
+    conf_group.add_argument('-d', '--data_dir', type=str, default=Configuration['data_dir'], help='Name of the data directory. Here the pseudos are generated and hold temporary files. It gets ovewritten each time a new pseudo is created. Defaults to '+Configuration['data_dir'])
+    conf_group.add_argument('-rcf', '--r_core_flag', type=float, default=Configuration['pseudo_config']['r_core_flag'], help='Value of the r_core_flag to use. The program does not optimize this value. Defaults to '+str(Configuration['pseudo_config']['r_core_flag']))
 
     variables_group = parser.add_argument_group('Program evaluation variables')
     variables_group.add_argument('-rs', type=float, help='Value of the s orbital cutoff. If set, overrides the value present in the input pseudo *.inp file.')
@@ -102,153 +102,223 @@ def main():
     op_variables_group = parser.add_argument_group('Program optimization variables')
     op_variables_group.add_argument('--resume', action='store_false', help='Perform an optimization run without deleting previous results.')
     op_variables_group.add_argument('-opvar', '--optimization_variables', nargs='*', type=str, choices=['rs', 'rp', 'rd', 'rf', 'rcore'], help="Optimize the pseudopotential using only the selected orbitals' cutoff radius. Defaults to the orbitals detected in the pseudo. For the fixed orbitals, it uses the value in the input *.inp pseudo file or the value set by the -r* flags. If core corrections, the progrma includes rc in the default orbitals to optimize.")
-    op_variables_group.add_argument('-maxiter', type=int, default=Maxiter, help='Maximum number of pseudos to evaluate during the optimization (soft limit). Defaults to '+str(Maxiter))
-    op_variables_group.add_argument('--rs_min', type=float, default=Bounds[0][0], help='Lower bound for rs optimization. Defaults to '+str(Bounds[0][0]))
-    op_variables_group.add_argument('--rs_max', type=float, default=Bounds[0][1], help='Upper bound for rs optimization. Defaults to '+str(Bounds[0][1]))
-    op_variables_group.add_argument('--rp_min', type=float, default=Bounds[1][0], help='Lower bound for rp optimization. Defaults to '+str(Bounds[1][0]))
-    op_variables_group.add_argument('--rp_max', type=float, default=Bounds[1][1], help='Upper bound for rp optimization. Defaults to '+str(Bounds[1][1]))
-    op_variables_group.add_argument('--rd_min', type=float, default=Bounds[2][0], help='Lower bound for rd optimization. Defaults to '+str(Bounds[2][0]))
-    op_variables_group.add_argument('--rd_max', type=float, default=Bounds[2][1], help='Upper bound for rd optimization. Defaults to '+str(Bounds[2][1]))
-    op_variables_group.add_argument('--rf_min', type=float, default=Bounds[3][0], help='Lower bound for rf optimization. Defaults to '+str(Bounds[3][0]))
-    op_variables_group.add_argument('--rf_max', type=float, default=Bounds[3][1], help='Upper bound for rf optimization. Defaults to '+str(Bounds[3][1]))
-    op_variables_group.add_argument('--rc_min', type=float, default=Bounds[4][0], help='Lower bound for rc optimization. Defaults to '+str(Bounds[4][0]))
-    op_variables_group.add_argument('--rc_max', type=float, default=Bounds[4][1], help='Upper bound for rc optimization. Defaults to '+str(Bounds[4][1]))
+    op_variables_group.add_argument('-maxiter', type=int, default=Configuration['maxiter'], help='Maximum number of pseudos to evaluate during the optimization (soft limit). Defaults to '+str(Configuration['maxiter']))
+    op_variables_group.add_argument('--rs_min', type=float, default=Configuration['bounds'][0][0], help='Lower bound for rs optimization. Defaults to '+str(Configuration['bounds'][0][0]))
+    op_variables_group.add_argument('--rs_max', type=float, default=Configuration['bounds'][0][1], help='Upper bound for rs optimization. Defaults to '+str(Configuration['bounds'][0][1]))
+    op_variables_group.add_argument('--rp_min', type=float, default=Configuration['bounds'][1][0], help='Lower bound for rp optimization. Defaults to '+str(Configuration['bounds'][1][0]))
+    op_variables_group.add_argument('--rp_max', type=float, default=Configuration['bounds'][1][1], help='Upper bound for rp optimization. Defaults to '+str(Configuration['bounds'][1][1]))
+    op_variables_group.add_argument('--rd_min', type=float, default=Configuration['bounds'][2][0], help='Lower bound for rd optimization. Defaults to '+str(Configuration['bounds'][2][0]))
+    op_variables_group.add_argument('--rd_max', type=float, default=Configuration['bounds'][2][1], help='Upper bound for rd optimization. Defaults to '+str(Configuration['bounds'][2][1]))
+    op_variables_group.add_argument('--rf_min', type=float, default=Configuration['bounds'][3][0], help='Lower bound for rf optimization. Defaults to '+str(Configuration['bounds'][3][0]))
+    op_variables_group.add_argument('--rf_max', type=float, default=Configuration['bounds'][3][1], help='Upper bound for rf optimization. Defaults to '+str(Configuration['bounds'][3][1]))
+    op_variables_group.add_argument('--rc_min', type=float, default=Configuration['bounds'][4][0], help='Lower bound for rc optimization. Defaults to '+str(Configuration['bounds'][4][0]))
+    op_variables_group.add_argument('--rc_max', type=float, default=Configuration['bounds'][4][1], help='Upper bound for rc optimization. Defaults to '+str(Configuration['bounds'][4][1]))
     op_variables_group.add_argument('--no_rcore', action='store_false', help="Don't optimize the rcore variable when letting the program decide the optimization_variables automatically. Only relevant for core corrections.")
+
+    hardness_group = parser.add_argument_group('Hardness penalization variables (b /(1.0 + exp((q0 - qmax)/a))) where qmax comes from Atom FOURIER_QMAX output')
+    hardness_group.add_argument('-a', type=float, default=Configuration['a'], help='Sigmoind width. Defaults to '+str(Configuration['a']))
+    hardness_group.add_argument('-b', type=float, default=Configuration['b'], help='Sigmoind max value. Defaults to '+str(Configuration['b']))
+    hardness_group.add_argument('-q0', type=float, default=Configuration['q0'], help='Sigmoind change location. Defaults to '+str(Configuration['q0']))
 
     args = parser.parse_args()
     proces_arguments(args)
 
 def proces_arguments(args):
-    # Change parsed values
-    global Pfile
+    Configuration['pg'] = args.pg
+    Configuration['pt'] = args.pt
+    Configuration['data_dir'] = os.path.join(Configuration['script_dir'], args.data_dir)
+    Configuration['data_pfile'] = os.path.join(Configuration['data_dir'], 'temporary.inp')
+    Configuration['data_tfile'] = os.path.join(Configuration['data_dir'], 'test.inp')
+    Configuration['out_dir'] = os.path.join(Configuration['script_dir'], args.out_dir)
+    Configuration['maxiter'] = args.maxiter
+    Configuration['bounds'][0][0] = args.rs_min
+    Configuration['bounds'][0][1] = args.rs_max
+    Configuration['bounds'][1][0] = args.rp_min
+    Configuration['bounds'][1][1] = args.rp_max
+    Configuration['bounds'][2][0] = args.rd_min
+    Configuration['bounds'][2][1] = args.rd_max
+    Configuration['bounds'][3][0] = args.rf_min
+    Configuration['bounds'][3][1] = args.rf_max
+    Configuration['bounds'][4][0] = args.rc_min
+    Configuration['bounds'][4][1] = args.rc_max
+    Configuration['a'] = args.a
+    Configuration['b'] = args.b
+    Configuration['q0'] = args.q0
+    Configuration['pseudo_config']['r_core_flag'] = args.r_core_flag
+
     if args.input_psuedo is not None:
-        Pfile = os.path.join(Script_Dir, args.input_psuedo)
-        
-    global Tfile
+        Configuration['input_psuedo'] = os.path.join(Configuration['script_dir'], args.input_psuedo)
+
     if args.input_test is not None:
-        Tfile = os.path.join(Script_Dir, args.input_test)
+        Configuration['input_test'] = os.path.join(Configuration['script_dir'], args.input_test)
 
-    global pg
-    pg = args.pg
-
-    global pt
-    pt = args.pt
-
-    global Data_Dir
-    Data_Dir = os.path.join(Script_Dir, args.data_dir)
-    global Data_Pfile
-    Data_Pfile = os.path.join(Data_Dir, 'temporary.inp')
-    global Data_Tfile
-    Data_Tfile = os.path.join(Data_Dir, 'test.inp')
-
-    global Out_Dir
-    Out_Dir = os.path.join(Script_Dir, args.out_dir)
-
-    global r_core_flag
-    r_core_flag = args.r_core_flag
-
-    global Bounds
-    Bounds[0][0] = args.rs_min
-    Bounds[0][1] = args.rs_max
-    Bounds[1][0] = args.rp_min
-    Bounds[1][1] = args.rp_max
-    Bounds[2][0] = args.rd_min
-    Bounds[2][1] = args.rd_max
-    Bounds[3][0] = args.rf_min
-    Bounds[3][1] = args.rf_max
-    Bounds[4][0] = args.rc_min
-    Bounds[4][1] = args.rc_max
-
-    global Maxiter
-    Maxiter = args.maxiter
-
+    # program functions
     if args.check_files:
         find_files()
 
     if args.results:
-        configure(empty_out = False)
+        configure(empty_out = False, load_config = True)
         results()
 
     if args.evaluate:
         configure(empty_out = False)
         if args.rs is not None:
-            Pseudo_Config['rs'] = args.rs 
+            Configuration['pseudo_config']['rs'] = args.rs
 
         if args.rp is not None:
-            Pseudo_Config['rp'] = args.rp
+            Configuration['pseudo_config']['rp'] = args.rp
 
         if args.rd is not None:
-            Pseudo_Config['rd'] = args.rd
+            Configuration['pseudo_config']['rd'] = args.rd
 
         if args.rf is not None:
-            Pseudo_Config['rf'] = args.rf
+            Configuration['pseudo_config']['rf'] = args.rf
 
         if args.rcore is not None:
-            Pseudo_Config['rcore'] = args.rcore
+            Configuration['pseudo_config']['rcore'] = args.rcore
 
         evaluate_pseudo()
         results(evaluation = True)
 
     if args.optimize:
-        configure(empty_out = args.resume)
+        configure(empty_out = args.resume, load_config = not args.resume)
         if args.rs is not None:
-            Pseudo_Config['rs'] = args.rs 
+            Configuration['pseudo_config']['rs'] = args.rs
 
         if args.rp is not None:
-            Pseudo_Config['rp'] = args.rp
+            Configuration['pseudo_config']['rp'] = args.rp
 
         if args.rd is not None:
-            Pseudo_Config['rd'] = args.rd
+            Configuration['pseudo_config']['rd'] = args.rd
 
         if args.rf is not None:
-            Pseudo_Config['rf'] = args.rf
+            Configuration['pseudo_config']['rf'] = args.rf
 
         if args.rcore is not None:
-            Pseudo_Config['rcore'] = args.rcore
+            Configuration['pseudo_config']['rcore'] = args.rcore
 
-        global Keys
         if args.optimization_variables is not None:
             if len(args.optimization_variables) != 0:
-                Keys = list(set(args.optimization_variables))
-                Keys = sorted(Keys, key=lambda x: Key_Order.index(x))
-        
-        if len(Keys) == 0:
-            for orbital in Pseudo_Config['orbital_block']:
-                Keys.append(Orbital_Keys[orbital[1]])
-            if Pseudo_Config['run_type'] == 'pe' and args.no_rcore:
-                Keys.append('rcore')
+                Configuration['opvars'] = list(set(args.optimization_variables))
+                Configuration['opvars'] = sorted(Configuration['opvars'], key=lambda x: ['rs', 'rp', 'rd', 'rf', 'rcore'].index(x))
 
-            Keys = sorted(Keys, key=lambda x: Key_Order.index(x))
+        if len(Configuration['opvars']) == 0:
+            for orbital in Configuration['pseudo_config']['orbital_block']:
+                Configuration['opvars'].append(Orbital_Keys[orbital[1]])
+            if Configuration['pseudo_config']['run_type'] == 'pe' and args.no_rcore:
+                Configuration['opvars'].append('rcore')
 
-        res = optimize.dual_annealing(function_to_optimize, [Bounds[Orbital_Keys_Rev[key]] for key in Keys], maxfun = Maxiter, maxiter = int(1e5), no_local_search=True)
+            Configuration['opvars'] = sorted(Configuration['opvars'], key=lambda x: ['rs', 'rp', 'rd', 'rf', 'rcore'].index(x))
+
+        res = optimize.dual_annealing(function_to_optimize, [Configuration['bounds'][Orbital_Keys_Rev[key]] for key in Configuration['opvars']], maxfun = Configuration['maxiter'], maxiter = int(1e5), no_local_search=True)
         print(res)
         results()
 
-def function_to_optimize(x):
-    for i, key in enumerate(Keys):
-        Pseudo_Config[key] = x[i]
+def configure(empty_out = True, load_config = False):
+    global Configuration
+    find_files()
+    read_pseudo(Configuration['input_psuedo'])
 
+    Configuration['tests'] = read_test(Configuration['input_test'])
+
+    #If Data Doesn't Exist, Create It, Else, Format It
+    if not os.path.exists(Configuration['data_dir']):
+        os.mkdir(Configuration['data_dir'])
+        print("directory " , Configuration['data_dir'] ,  " created ")
+    empty_dir(Configuration['data_dir'])
+
+    #If Out Doesn't Exist, Create It, Else, Format It
+    if not os.path.exists(Configuration['out_dir']):
+        os.mkdir(Configuration['out_dir'])
+        print("directory " , Configuration['out_dir'] ,  " created ")
+
+    if empty_out:
+        empty_dir(Configuration['out_dir'])
+        # Create out.log With the Header
+        with open(os.path.join(Configuration['out_dir'], 'out.log'), 'w') as file:
+            print('rs,rp,rd,rf,r_core_flag,rcore,DeltaE,DeltaEig,hardness,score', file = file)
+
+    if not os.path.exists(os.path.join(Configuration['out_dir'], 'out.log')):
+        with open(os.path.join(Configuration['out_dir'], 'out.log'), 'w') as file:
+            print('rs,rp,rd,rf,r_core_flag,rcore,DeltaE,DeltaEig,hardness,score', file = file)
+
+    if load_config:
+        if os.path.exists(os.path.join(Configuration['out_dir'], 'config.json')):
+            print('loading config.json.')
+            with open(os.path.join(Configuration['out_dir'], 'config.json'), 'r') as config_file:
+                Configuration = json.load(config_file)
+        else:
+            print('config.json not found. Using command line variables.')
+
+    write_test(Configuration['tests'], file = Configuration['data_tfile'])
+    write_test(Configuration['tests'], file = os.path.join(Configuration['out_dir'], os.path.basename(Configuration['input_test'])))
+
+    write_pseudo(file = Configuration['data_pfile'])
+    write_pseudo(file = os.path.join(Configuration['out_dir'], 'original-' + os.path.basename(Configuration['input_psuedo'])))
+
+def find_files():
+    #Serch for Transference Test File
+    if Configuration['input_test'] == '':
+        for file in glob.glob(os.path.join(Configuration['script_dir'], '*test*')):
+            Configuration['input_test'] = file
+
+    if Configuration['input_test'] != '' and os.path.isfile(Configuration['input_test']):
+        print('Tests file found: ', Configuration['input_test'])
+    else:
+        print('Tests file not found')
+        exit()
+    #Serch for Pseudo File
+    if Configuration['input_psuedo'] == '':
+        for file in os.listdir(Configuration['script_dir']):
+            if file.endswith(".inp") and os.path.join(Configuration['script_dir'], file) != Configuration['input_test']:
+                Configuration['input_psuedo'] = os.path.join(Configuration['script_dir'], file)
+
+    if Configuration['input_psuedo'] != '' and os.path.isfile(Configuration['input_psuedo']):
+        print('Pseudopotential file found: ', Configuration['input_psuedo'])
+    else:
+        print('Pseudopotential file not found')
+        exit()
+
+    #Search for ATOM Scripts
+    if os.path.isfile(Configuration['pg']):
+        print('pg.sh found: ', Configuration['pg'])
+    else:
+        print('pg.sh not found, edit script and correct path.')
+        exit()
+
+    if os.path.isfile(Configuration['pt']):
+        print('pt.sh found: ', Configuration['pt'])
+    else:
+        print('pt.sh not found, edit script and correct path.')
+        exit()
+
+def function_to_optimize(x):
+    for i, key in enumerate(Configuration['opvars']):
+        Configuration['pseudo_config'][key] = x[i]
     return evaluate_pseudo()
 
 def results(evaluation=False):
-    if not os.path.exists(Out_Dir):
+    if not os.path.exists(Configuration['out_dir']):
         print('There\'s no Out directory')
         exit()
 
-    if not os.path.exists(os.path.join(Out_Dir, 'out.log')):
+    with open(os.path.join(Configuration['out_dir'], 'config.json'), 'w') as config_file:
+        json.dump(Configuration, config_file, indent=4)
+
+    if not os.path.exists(os.path.join(Configuration['out_dir'], 'out.log')):
         print('There\'s no out.log file')
         exit()
 
-    num_lines = sum(1 for line in open(os.path.join(Out_Dir, 'out.log')))
+    num_lines = sum(1 for line in open(os.path.join(Configuration['out_dir'], 'out.log')))
     if num_lines < 2:
         print('There are no results in Out directory')
         exit()
 
-    df = pd.read_csv(os.path.join(Out_Dir, 'out.log'))
+    df = pd.read_csv(os.path.join(Configuration['out_dir'], 'out.log'))
     min_score = df['score'].min()
     entries_with_min_score = df[df['score'] == min_score].drop_duplicates()
-    entries_with_min_score.to_csv(os.path.join(Out_Dir, 'best_entries.log'), index=False, float_format='%.5f')
-    
+    entries_with_min_score.to_csv(os.path.join(Configuration['out_dir'], 'best_entries.log'), index=False, float_format='%.5f')
+
     first_entry = entries_with_min_score.iloc[0]
     x = [first_entry['rs'], first_entry['rp'], first_entry['rd'], first_entry['rf'], first_entry['rcore']]
     print_pseudo()
@@ -262,7 +332,7 @@ def results(evaluation=False):
 
     if not evaluation:
         function_to_optimize(x)
-    
+
     plots()
 
 def copy_files(src_pattern, dst_dir):
@@ -270,30 +340,30 @@ def copy_files(src_pattern, dst_dir):
         shutil.copy(filepath, dst_dir)
 
 def plots():
-    os.chdir(os.path.join(Data_Dir, 'test-temporary'))
+    os.chdir(os.path.join(Configuration['data_dir'], 'test-temporary'))
     os.system('gnuplot charge.gps vcharge.gps vspin.gps pt.gps')
-    os.chdir(os.path.join(Data_Dir, 'temporary'))
+    os.chdir(os.path.join(Configuration['data_dir'], 'temporary'))
     os.system('gnuplot pseudo.gps')
-    os.chdir(Script_Dir)
-    copy_files(os.path.join(Data_Dir, 'test-temporary', '*.ps'), Out_Dir)
-    copy_files(os.path.join(Data_Dir, 'temporary', '*.ps'), Out_Dir)
+    os.chdir(Configuration['script_dir'])
+    copy_files(os.path.join(Configuration['data_dir'], 'test-temporary', '*.ps'), Configuration['out_dir'])
+    copy_files(os.path.join(Configuration['data_dir'], 'temporary', '*.ps'), Configuration['out_dir'])
 
     # Move Pseudos and Plotst to Out Directory
-    write_pseudo(file=os.path.join(Out_Dir, os.path.basename(Pfile)))
-    shutil.copy(os.path.join(Data_Dir, 'temporary.psf'), os.path.join(Out_Dir, Pseudo_Config['chemical_symbol'].strip()+'.psf'))
-    shutil.copy(os.path.join(Data_Dir, 'temporary.psml'), os.path.join(Out_Dir, Pseudo_Config['chemical_symbol'].strip()+'.psml'))
-    shutil.copy(os.path.join(Data_Dir, 'temporary.vps'), os.path.join(Out_Dir, Pseudo_Config['chemical_symbol'].strip()+'.vps'))
+    write_pseudo(file = os.path.join(Configuration['out_dir'], os.path.basename(Configuration['input_psuedo'])))
+    shutil.copy(os.path.join(Configuration['data_dir'], 'temporary.psf'), os.path.join(Configuration['out_dir'], Configuration['pseudo_config']['chemical_symbol'].strip() + '.psf'))
+    shutil.copy(os.path.join(Configuration['data_dir'], 'temporary.psml'), os.path.join(Configuration['out_dir'], Configuration['pseudo_config']['chemical_symbol'].strip() + '.psml'))
+    shutil.copy(os.path.join(Configuration['data_dir'], 'temporary.vps'), os.path.join(Configuration['out_dir'], Configuration['pseudo_config']['chemical_symbol'].strip() + '.vps'))
 
 def extract_eigen_val(lines):
-    eig_ae = [0]
-    eig_pt = [0]
+    eig_ae = [0.0]
+    eig_pt = [0.0]
     is_eig_pt_section = False
 
     for line in lines:
         if 'End' in line:
             is_eig_pt_section = True
             continue  # Skip the line containing 'End'
-        
+
         for num in line.split()[:-3]: # only first eigenvalue
             # Check if num is a number (float or int)
             try:
@@ -344,37 +414,37 @@ def evaluate_pseudo():
     global Count
     Count += 1
 
-    write_pseudo(file=Data_Pfile)
-    empty_dir(Data_Dir, files_to_keep = [Data_Pfile, Data_Tfile])
+    write_pseudo(file = Configuration['data_pfile'])
+    empty_dir(Configuration['data_dir'], files_to_keep = [Configuration['data_pfile'], Configuration['data_tfile']])
 
-    os.chdir(Data_Dir)
-    os.system('sh ' + pg + ' temporary.inp >/dev/null 2>&1')
+    os.chdir(Configuration['data_dir'])
+    os.system('sh ' + Configuration['pg'] + ' temporary.inp >/dev/null 2>&1')
 
-    # If Fails Leave the Function 
-    if not os.path.isfile(os.path.join(Data_Dir, 'temporary.vps')):
-        os.chdir(Script_Dir) # Return to Top Directory
-        print(str(Count)+'th Pseudo failed')
+    # If Fails Leave the Function
+    if not os.path.isfile(os.path.join(Configuration['data_dir'], 'temporary.vps')):
+        os.chdir(Configuration['script_dir']) # Return to Top Directory
+        print(str(Count) + 'th Pseudo failed')
         return Bad_Return
 
-    # If Fails Leave the Function 
+    # If Fails Leave the Function
     if not os.path.isfile(os.path.join('temporary', 'FOURIER_QMAX')):
-        os.chdir(Script_Dir) # Return to Top Directory
-        print(str(Count)+'th Pseudo failed')
+        os.chdir(Configuration['script_dir']) # Return to Top Directory
+        print(str(Count) + 'th Pseudo failed')
         return Bad_Return
 
     # Execute Transferability Tests
-    os.system('sh ' + pt + ' test.inp temporary.vps >/dev/null 2>&1')
+    os.system('sh ' + Configuration['pt'] + ' test.inp temporary.vps >/dev/null 2>&1')
 
-    # If Fails Leave the Function 
+    # If Fails Leave the Function
     if not os.path.isfile(os.path.join('test-temporary', 'ECONF_DIFFS')):
-        os.chdir(Script_Dir) # Return to Top Directory
-        print(str(Count)+'th Test failed')
+        os.chdir(Configuration['script_dir']) # Return to Top Directory
+        print(str(Count) + 'th Test failed')
         return Bad_Return
 
-    # If Fails Leave the Function 
+    # If Fails Leave the Function
     if not os.path.isfile(os.path.join('test-temporary', 'OUT')):
-        os.chdir(Script_Dir) # Return to Top Directory
-        print(str(Count)+'th Test failed')
+        os.chdir(Configuration['script_dir']) # Return to Top Directory
+        print(str(Count) + 'th Test failed')
         return Bad_Return
 
     DeltaEig = eigen_val_diff()
@@ -390,88 +460,11 @@ def evaluate_pseudo():
         file.readline()
         qmax = sum([hardness_penalization(float(x)) for x in file.readline().split()])
 
-    report = [Pseudo_Config['rs'], Pseudo_Config['rp'], Pseudo_Config['rd'], Pseudo_Config['rf'], Pseudo_Config['rcore_flag'], Pseudo_Config['rcore'], DeltaE, DeltaEig, qmax, DeltaE + DeltaEig + qmax]
-    with open(os.path.join(Out_Dir, 'out.log'), 'a') as file:
+    report = [Configuration['pseudo_config']['rs'], Configuration['pseudo_config']['rp'], Configuration['pseudo_config']['rd'], Configuration['pseudo_config']['rf'], Configuration['pseudo_config']['r_core_flag'], Configuration['pseudo_config']['rcore'], DeltaE, DeltaEig, qmax, DeltaE + DeltaEig + qmax]
+    with open(os.path.join(Configuration['out_dir'], 'out.log'), 'a') as file:
         print(','.join([f"{num:.5f}" for num in report[:-1]] + [f"{report[-1]:.8f}"]), file=file)
 
     return DeltaE + DeltaEig + qmax
-
-    
-def configure(empty_out = True):
-    find_files()
-    read_pseudo(Pfile)
-
-    global Tests
-    Tests = read_test(Tfile)
-
-    #If Data Doesn't Exist, Create It, Else, Format It
-    dirName = Data_Dir
-    if not os.path.exists(dirName):
-        os.mkdir(dirName)
-        print("directory " , dirName ,  " created ")
-    empty_dir(dirName)
-
-    #If Out Doesn't Exist, Create It, Else, Format It
-    dirName = Out_Dir
-    if not os.path.exists(dirName):
-        os.mkdir(dirName)
-        print("directory " , dirName ,  " created ")
-
-    if empty_out:
-        empty_dir(dirName)
-        # Create out.log With the Header
-        with open(os.path.join(Out_Dir, 'out.log'), 'w') as file:
-            print('rs,rp,rd,rf,rcore_flag,rcore,DeltaE,DeltaEig,hardness,score', file=file)
-
-    if not os.path.exists(os.path.join(Out_Dir, 'out.log')):
-        with open(os.path.join(Out_Dir, 'out.log'), 'w') as file:
-            print('rs,rp,rd,rf,rcore_flag,rcore,DeltaE,DeltaEig,hardness,score', file=file)
-
-    write_test(Tests, file=Data_Tfile)
-    write_test(Tests, file=os.path.join(Out_Dir, os.path.basename(Tfile)))
-
-    write_pseudo(file=Data_Pfile)
-    write_pseudo(file=os.path.join(Out_Dir, 'original-'+os.path.basename(Pfile)))
-
-def find_files():
-    #Serch for Transference Test File
-    global Tfile
-    if Tfile=='':
-        for file in glob.glob(os.path.join(Script_Dir, '*test*')):
-            Tfile = file
-
-    if Tfile!='' and os.path.isfile(Tfile):
-        print('Tests file found: ', Tfile)
-    else:
-        print('Tests file not found')
-        exit()
-
-    #Serch for Pseudo File
-    global Pfile
-    if Pfile == '':
-        for file in os.listdir(Script_Dir):
-            if file.endswith(".inp") and os.path.join(Script_Dir,file) != Tfile:
-                Pfile = os.path.join(Script_Dir, file)
-
-    if Pfile != '' and os.path.isfile(Pfile):
-        print('Pseudopotential file found: ', Pfile)
-    else:
-        print('Pseudopotential file not found')
-        exit()
-
-    #Search for ATOM Scripts
-    if os.path.isfile(pg):
-        print('pg.sh found: ', pg)
-    else:
-        print('pg.sh not found, edit script and correct path.') 
-        exit()
-
-    if os.path.isfile(pt):
-        print('pt.sh found: ', pt)
-    else:
-        print('pt.sh not found, edit script and correct path.') 
-        exit()
-
 
 def empty_dir(directory, files_to_keep = []):
     for filename in os.listdir(directory):
@@ -493,7 +486,7 @@ def read_test(file):
 
     for i in range(len(lines)):
         lines[i] = lines[i].split('#')[0]
-    
+
     lines = [line for line in lines if not line.isspace()]
     lines = [line.rstrip() for line in lines]
     lines = [line for line in lines if line.strip()]
@@ -507,12 +500,12 @@ def read_test(file):
     test_locations = []
     for i, line in enumerate(lines):
         if line.split()[0][-2:] == 'ae':
-            number_tests +=1
+            number_tests += 1
             test_locations.append(i)
     test_locations.append(len(lines))
 
     for i in range(number_tests):
-        tests.append(read_ae(lines[test_locations[i]:test_locations[i+1]]))
+        tests.append(read_ae(lines[test_locations[i]:test_locations[i + 1]]))
 
     return tests
 
@@ -529,7 +522,7 @@ def print_test(tests):
         print_ae(ae_config)
         ae_config['run_type'] = 'ae'
 
-def write_test(tests, file='test.inp'):
+def write_test(tests, file = 'test.inp'):
     output = []
     for ae_config in tests:
         write_ae(ae_config, output)
@@ -551,26 +544,24 @@ def check_ae(ae_config):
     error = False
     if ae_config['run_type'] not in ['ae', 'pt']:
         error = True
-        print('run_type should be ae or pt, got: '+ae_config['run_type'])
+        print('run_type should be ae or pt, got: ' + ae_config['run_type'])
 
     if ae_config['XC_flavor'] not in ['xc', 'wi', 'hl', 'gl', 'bh', 'ca', 'pw', 'pb', 'wp', 'rp', 'rv', 'ps', 'wc', 'jo', 'jh', 'go', 'gh', 'am', 'bl', 'vw', 'vl', 'vk', 'vc', 'vb', 'vv']:
         error = True
-        print('XC_flavor should be xc, wi, hl, gl, bh, ca, pw, pb, wp, rp, rv, ps, wc, jo, jh, go, gh, am, bl, vw, vl, vk, vc, vb or vv, got: '+ae_config['XC_flavor'])
+        print('XC_flavor should be xc, wi, hl, gl, bh, ca, pw, pb, wp, rp, rv, ps, wc, jo, jh, go, gh, am, bl, vw, vl, vk, vc, vb or vv, got: ' + ae_config['XC_flavor'])
 
     if ae_config['XC_flavor'] == 'xc' and (not len(ae_config['XC_id']) == 8 or not ae_config['XC_id'][0] == '0' or not ae_config['XC_id'][4] == '0'):
         error = True
-        print('XC_id has to be a 8 digit integer that follows 0XXX0YYY where XXX and YYY are libxc IDs. XXX is exchange and YYY is correlation. Got: '+ae_config['XC_id'])
+        print('XC_id has to be a 8 digit integer that follows 0XXX0YYY where XXX and YYY are libxc IDs. XXX is exchange and YYY is correlation. Got: ' + ae_config['XC_id'])
 
     if error:
-        raise Valueerror('Input has errors')
+        raise ValueError('Input has errors')
 
 def read_ae(lines):
     ae_config = {'XC_id' : '00000000', 'spin_relativistic': ''}
-
     # first line
     ae_config['run_type'] = lines[0].split()[0][:2]
     ae_config['title'] = lines[0][lines[0].find(ae_config['run_type']) + 2:]
-
     # second line
     ae_config['chemical_symbol'] = lines[1].split()[0][-2:]
     if lines[1].split()[1][-1] in ['r', 's']:
@@ -581,14 +572,11 @@ def read_ae(lines):
 
     if ae_config['XC_flavor'] == 'xc':
         ae_config['XC_id'] = lines[1].split()[2]
-
     # third line
     ae_config['fractional_atomic_number'] = float(lines[2].split()[0])
-
     # fourth line
     ae_config['norbs_core'] = int(lines[3].split()[0])
     ae_config['norbs_valence'] = int(lines[3].split()[1])
-
     # orbitals block
     ae_config['orbital_block'] = []
     for i in range(1, ae_config['norbs_valence'] + 1):
@@ -597,7 +585,7 @@ def read_ae(lines):
             orbitals = [int(orbitals[0]), int(orbitals[1]), float(orbitals[2]), float(orbitals[3])]
         else:
             orbitals = [int(orbitals[0]), int(orbitals[1]), float(orbitals[2]), 0.0]
-            
+
         ae_config['orbital_block'].append(orbitals)
 
     check_ae(ae_config)
@@ -616,8 +604,8 @@ def print_ae(ae_config):
     for line in ae_config['orbital_block']:
         print(f"{line[0]:5d}{line[1]:5d}{line[2]:10.3f}{line[3]:10.3f}")
     print('')
-    
-def write_ae(ae_config, output=[]):
+
+def write_ae(ae_config, output = []):
     # (format 3x,a2,a50)
     output.append(f"{'':3}{ae_config['run_type']:2}{'':1}{ae_config['title']:49}")
     # (format 3x,a2,3x,a2,a1,1x,i8)
@@ -632,137 +620,128 @@ def write_ae(ae_config, output=[]):
 
     return output
 
-def check_pseudo(pseudo_config = Pseudo_Config):
+def check_pseudo(pseudo_config = Configuration['pseudo_config']):
     error = False
     if pseudo_config['run_type'] not in ['pg', 'pe']:
         error = True
-        print('run_type should be pg or pe, got: '+pseudo_config['run_type'])
+        print('run_type should be pg or pe, got: ' + pseudo_config['run_type'])
 
     if pseudo_config['PS_flavor'] not in ['hsc', 'ker', 'tm2']:
         error = True
-        print('PS_flavor should be hsc, ker or tm2, got: '+pseudo_config['PS_flavor'])
+        print('PS_flavor should be hsc, ker or tm2, got: ' + pseudo_config['PS_flavor'])
 
     if pseudo_config['XC_flavor'] not in ['xc', 'wi', 'hl', 'gl', 'bh', 'ca', 'pw', 'pb', 'wp', 'rp', 'rv', 'ps', 'wc', 'jo', 'jh', 'go', 'gh', 'am', 'bl', 'vw', 'vl', 'vk', 'vc', 'vb', 'vv']:
         error = True
-        print('XC_flavor should be xc, wi, hl, gl, bh, ca, pw, pb, wp, rp, rv, ps, wc, jo, jh, go, gh, am, bl, vw, vl, vk, vc, vb or vv, got: '+pseudo_config['XC_flavor'])
+        print('XC_flavor should be xc, wi, hl, gl, bh, ca, pw, pb, wp, rp, rv, ps, wc, jo, jh, go, gh, am, bl, vw, vl, vk, vc, vb or vv, got: ' + pseudo_config['XC_flavor'])
 
 
     if pseudo_config['XC_flavor'] == 'xc' and (not len(pseudo_config['XC_id']) == 8 or not pseudo_config['XC_id'][0] == '0' or not pseudo_config['XC_id'][4] == '0'):
         error = True
-        print('XC_id has to be a 8 digit integer that follows 0XXX0YYY where XXX and YYY are libxc IDs. XXX is correlation and YYY is exchange. got: '+pseudo_config['XC_id'])
+        print('XC_id has to be a 8 digit integer that follows 0XXX0YYY where XXX and YYY are libxc IDs. XXX is correlation and YYY is exchange. got: ' + pseudo_config['XC_id'])
 
     if error:
-        raise Valueerror('Input has errors')
+        raise ValueError('Input has errors')
 
-def read_pseudo(file, pseudo_config = Pseudo_Config):
+def read_pseudo(file):
     lines = []
     with open(file, 'r') as f:
         lines = f.readlines()
 
     for i in range(len(lines)):
         lines[i] = lines[i].split('#')[0]
-    
+
     lines = [line for line in lines if not line.isspace()]
     lines = [line.rstrip() for line in lines]
     lines = [line for line in lines if line.strip()]
-
     # first line
-    pseudo_config['run_type'] = lines[0].split()[0][:2]
-    pseudo_config['title'] = lines[0][lines[0].find(pseudo_config['run_type']) + 2:]
-
+    Configuration['pseudo_config']['run_type'] = lines[0].split()[0][:2]
+    Configuration['pseudo_config']['title'] = lines[0][lines[0].find(Configuration['pseudo_config']['run_type']) + 2:]
     # second line
-    pseudo_config['PS_flavor'] =  lines[1].split()[0]
-    pseudo_config['logder_r'] =  float(lines[1].split()[1])
-
+    Configuration['pseudo_config']['PS_flavor'] =  lines[1].split()[0]
+    Configuration['pseudo_config']['logder_r'] =  float(lines[1].split()[1])
     # third line
-    pseudo_config['chemical_symbol'] = lines[2].split()[0][-2:]
+    Configuration['pseudo_config']['chemical_symbol'] = lines[2].split()[0][-2:]
     if lines[2].split()[1][-1] in ['r', 's']:
-        pseudo_config['spin_relativistic'] = lines[2].split()[1][-1]
-        pseudo_config['XC_flavor'] = lines[2].split()[1][-3:-1]
+        Configuration['pseudo_config']['spin_relativistic'] = lines[2].split()[1][-1]
+        Configuration['pseudo_config']['XC_flavor'] = lines[2].split()[1][-3:-1]
     else:
-        pseudo_config['XC_flavor'] = lines[2].split()[1][-2:]
+        Configuration['pseudo_config']['XC_flavor'] = lines[2].split()[1][-2:]
 
-    if pseudo_config['XC_flavor'] == 'xc':
-        pseudo_config['XC_id'] = lines[2].split()[2]
-
+    if Configuration['pseudo_config']['XC_flavor'] == 'xc':
+        Configuration['pseudo_config']['XC_id'] = lines[2].split()[2]
     # fourth line
-    pseudo_config['fractional_atomic_number'] = float(lines[3].split()[0])
-
+    Configuration['pseudo_config']['fractional_atomic_number'] = float(lines[3].split()[0])
     # fifth line
-    pseudo_config['norbs_core'] = int(lines[4].split()[0])
-    pseudo_config['norbs_valence'] = int(lines[4].split()[1])
-
+    Configuration['pseudo_config']['norbs_core'] = int(lines[4].split()[0])
+    Configuration['pseudo_config']['norbs_valence'] = int(lines[4].split()[1])
     # orbitals block
-    pseudo_config['orbital_block'] = []
-    for i in range(1, pseudo_config['norbs_valence'] + 1):
+    Configuration['pseudo_config']['orbital_block'] = []
+    for i in range(1, Configuration['pseudo_config']['norbs_valence'] + 1):
         orbitals = lines[4+i].split()
         if len(orbitals) > 3:
             orbitals = [int(orbitals[0]), int(orbitals[1]), float(orbitals[2]), float(orbitals[3])]
         else:
             orbitals = [int(orbitals[0]), int(orbitals[1]), float(orbitals[2]), 0.0]
-            
-        pseudo_config['orbital_block'].append(orbitals)
 
+        Configuration['pseudo_config']['orbital_block'].append(orbitals)
     # last line
-    i = pseudo_config['norbs_valence'] + 5
+    i = Configuration['pseudo_config']['norbs_valence'] + 5
     if len(lines[i].split()) > 5:
         cutoff_radii = lines[i].split()[:6]
     elif len(lines[i].split()) > 3:
         cutoff_radii = lines[i].split()[:4]
 
     cutoff_radii = [float(x) for x in cutoff_radii]
-    pseudo_config['rs'] = cutoff_radii[0]
-    pseudo_config['rp'] = cutoff_radii[1]
-    pseudo_config['rd'] = cutoff_radii[2]
-    pseudo_config['rf'] = cutoff_radii[3]
+    Configuration['pseudo_config']['rs'] = cutoff_radii[0]
+    Configuration['pseudo_config']['rp'] = cutoff_radii[1]
+    Configuration['pseudo_config']['rd'] = cutoff_radii[2]
+    Configuration['pseudo_config']['rf'] = cutoff_radii[3]
 
     if len(cutoff_radii) > 5:
-        pseudo_config['rcore'] = cutoff_radii[5]
+        Configuration['pseudo_config']['rcore'] = cutoff_radii[5]
 
-    check_pseudo(pseudo_config)
+    check_pseudo(Configuration['pseudo_config'])
 
-def print_pseudo(pseudo_config = Pseudo_Config):
+def print_pseudo():
     # (format 3x,a2,a50)
-    print(f"{'':3}{pseudo_config['run_type']:2}{'':1}{pseudo_config['title']:49}")
+    print(f"{'':3}{Configuration['pseudo_config']['run_type']:2}{'':1}{Configuration['pseudo_config']['title']:49}")
     # (format 8x, a3, f9.3)
-    print(f"{'':8}{pseudo_config['PS_flavor']:3}{pseudo_config['logder_r']:9.3f}")
+    print(f"{'':8}{Configuration['pseudo_config']['PS_flavor']:3}{Configuration['pseudo_config']['logder_r']:9.3f}")
     # (format 3x,a2,3x,a2,a1,1x,i8)
-    print(f"{'':3}{pseudo_config['chemical_symbol']:2}{'':3}{pseudo_config['XC_flavor']:2}{pseudo_config['spin_relativistic']:1}{'':1}{pseudo_config['XC_id']:8}")
+    print(f"{'':3}{Configuration['pseudo_config']['chemical_symbol']:2}{'':3}{Configuration['pseudo_config']['XC_flavor']:2}{Configuration['pseudo_config']['spin_relativistic']:1}{'':1}{Configuration['pseudo_config']['XC_id']:8}")
     # (format f10.5)
-    print(f"{pseudo_config['fractional_atomic_number']:10.1f}")
+    print(f"{Configuration['pseudo_config']['fractional_atomic_number']:10.1f}")
     # (format 2i5)
-    print(f"{pseudo_config['norbs_core']:5d}{pseudo_config['norbs_valence']:5d}")
+    print(f"{Configuration['pseudo_config']['norbs_core']:5d}{Configuration['pseudo_config']['norbs_valence']:5d}")
     # block of orbitals (format 2i5,2f10.3)
-    for line in pseudo_config['orbital_block']:
+    for line in Configuration['pseudo_config']['orbital_block']:
         print(f"{line[0]:5d}{line[1]:5d}{line[2]:10.3f}{line[3]:10.3f}")
-    
+
     # (format 6f10.5)
-    print(f"{pseudo_config['rs']:10.5f}{pseudo_config['rp']:10.5f}{pseudo_config['rd']:10.5f}{pseudo_config['rf']:10.5f}{pseudo_config['rcore_flag']:10.5f}{pseudo_config['rcore']:10.5f}")
+    print(f"{Configuration['pseudo_config']['rs']:10.5f}{Configuration['pseudo_config']['rp']:10.5f}{Configuration['pseudo_config']['rd']:10.5f}{Configuration['pseudo_config']['rf']:10.5f}{Configuration['pseudo_config']['r_core_flag']:10.5f}{Configuration['pseudo_config']['rcore']:10.5f}")
     print('')
 
-def write_pseudo(pseudo_config=Pseudo_Config, file='temporary.inp'):
+def write_pseudo(file = 'temporary.inp'):
     output = []
-
     # (format 3x,a2,a50)
-    output.append(f"{'':3}{pseudo_config['run_type']:2}{'':1}{pseudo_config['title']:49}")
+    output.append(f"{'':3}{Configuration['pseudo_config']['run_type']:2}{'':1}{Configuration['pseudo_config']['title']:49}")
     # (format 8x, a3, f9.3)
-    output.append(f"{'':8}{pseudo_config['PS_flavor']:3}{pseudo_config['logder_r']:9.3f}")
+    output.append(f"{'':8}{Configuration['pseudo_config']['PS_flavor']:3}{Configuration['pseudo_config']['logder_r']:9.3f}")
     # (format 3x,a2,3x,a2,a1,1x,i8)
-    output.append(f"{'':3}{pseudo_config['chemical_symbol']:2}{'':3}{pseudo_config['XC_flavor']:2}{pseudo_config['spin_relativistic']:1}{'':1}{pseudo_config['XC_id']:8}")
+    output.append(f"{'':3}{Configuration['pseudo_config']['chemical_symbol']:2}{'':3}{Configuration['pseudo_config']['XC_flavor']:2}{Configuration['pseudo_config']['spin_relativistic']:1}{'':1}{Configuration['pseudo_config']['XC_id']:8}")
     # (format f10.5)
-    output.append(f"{pseudo_config['fractional_atomic_number']:10.1f}")
+    output.append(f"{Configuration['pseudo_config']['fractional_atomic_number']:10.1f}")
     # (format 2i5)
-    output.append(f"{pseudo_config['norbs_core']:5d}{pseudo_config['norbs_valence']:5d}")
+    output.append(f"{Configuration['pseudo_config']['norbs_core']:5d}{Configuration['pseudo_config']['norbs_valence']:5d}")
     # block of orbitals (format 2i5,2f10.3)
-    for line in pseudo_config['orbital_block']:
+    for line in Configuration['pseudo_config']['orbital_block']:
         output.append(f"{line[0]:5d}{line[1]:5d}{line[2]:10.3f}{line[3]:10.3f}")
     # (format 6f10.5)
-    output.append(f"{pseudo_config['rs']:10.5f}{pseudo_config['rp']:10.5f}{pseudo_config['rd']:10.5f}{pseudo_config['rf']:10.5f}{pseudo_config['rcore_flag']:10.5f}{pseudo_config['rcore']:10.5f}")
+    output.append(f"{Configuration['pseudo_config']['rs']:10.5f}{Configuration['pseudo_config']['rp']:10.5f}{Configuration['pseudo_config']['rd']:10.5f}{Configuration['pseudo_config']['rf']:10.5f}{Configuration['pseudo_config']['r_core_flag']:10.5f}{Configuration['pseudo_config']['rcore']:10.5f}")
 
     # Join all parts with newlines and write to the file
     with open(file, 'w') as f:
         f.write("\n".join(output))
-
 
 if __name__ == '__main__':
     main()
